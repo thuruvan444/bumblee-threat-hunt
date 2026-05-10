@@ -1,0 +1,42 @@
+# Credentials - never commit these
+*.env
+.env.*
+secrets.yml
+vault.yml
+
+# Ansible vault
+group_vars/all/vault.yml
+
+# Binaries - generate locally via setup_payloads.sh
+payloads/tools/*.exe
+payloads/tools/*.dll
+payloads/ps1/wab.exe
+payloads/ps1/PowerView.ps1
+
+# PCAP files - too large for GitHub
+*.pcap
+*.pcapng
+
+# Hydra/cracking artifacts
+hydra.restore
+*.hashcat
+*.hashes
+*.txt.cracked
+
+# Sliver artifacts
+*.sliverprofile
+sliver-client.cfg
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db

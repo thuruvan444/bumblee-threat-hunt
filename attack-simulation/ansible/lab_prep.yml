@@ -1,0 +1,120 @@
+---
+# ansible/lab_prep.yml - Run ONCE
+# Creates AD accounts + enables audit policies only
+# Run: ansible-playbook -i ansible/inventory.yml ansible/lab_prep.yml
+
+- name: "Lab Prep - DC: AD accounts + audit policies"
+  hosts: domain_controllers
+
+  tasks:
+
+    - name: Create svc_backup (kerberoastable DA)
+      ansible.windows.win_powershell:
+        script: |
+          Import-Module ActiveDirectory
+          if (-not (Get-ADUser -Filter {SamAccountName -eq "svc_backup"} -EA SilentlyContinue)) {
+              New-ADUser -Name "svc_backup" -SamAccountName "svc_backup" `
+                -AccountPassword (ConvertTo-SecureString "{{ svc_pass }}" -AsPlainText -Force) `
+                -PasswordNeverExpires $true -Enabled $true
+              Write-Output "Created svc_backup"
+          } else { Write-Output "svc_backup already exists" }
+
+    - name: Add svc_backup to Domain Admins
+      ansible.windows.win_powershell:
+        script: |
+          Import-Module ActiveDirectory
+          $m = Get-ADGroupMember "Domain Admins" | Select -Expand SamAccountName
+          if ("svc_backup" -notin $m) {
+              Add-ADGroupMember -Identity "Domain Admins" -Members "svc_backup"
+              Write-Output "Added to Domain Admins"
+          } else { Write-Output "Already Domain Admin" }
+
+    - name: Register SPN on svc_backup
+      ansible.windows.win_powershell:
+        script: |
+          $spn = "MSSQLSvc/dc01.corp.local:1433"
+          $existing = (Get-ADUser svc_backup -Properties ServicePrincipalNames).ServicePrincipalNames
+          if ($spn -notin $existing) {
+              setspn -A $spn corp\svc_backup
+              Write-Output "SPN registered"
+          } else { Write-Output "SPN already exists" }
+
+    - name: Create victim user jsmith
+      ansible.windows.win_powershell:
+        script: |
+          Import-Module ActiveDirectory
+          if (-not (Get-ADUser -Filter {SamAccountName -eq "jsmith"} -EA SilentlyContinue)) {
+              New-ADUser -Name "John Smith" -SamAccountName "jsmith" `
+                -AccountPassword (ConvertTo-SecureString "{{ jsmith_pass }}" -AsPlainText -Force) `
+                -Enabled $true
+              Write-Output "Created jsmith"
+          } else { Write-Output "jsmith already exists" }
+
+    - name: Audit - Kerberos (Event 4769)
+      ansible.windows.win_shell: |
+        auditpol /set /subcategory:"Kerberos Service Ticket Operations" /success:enable /failure:enable
+        auditpol /set /subcategory:"Kerberos Authentication Service" /success:enable /failure:enable
+
+    - name: Audit - Logon events (Event 4624)
+      ansible.windows.win_shell: |
+        auditpol /set /subcategory:"Logon" /success:enable /failure:enable
+        auditpol /set /subcategory:"Special Logon" /success:enable /failure:enable
+
+    - name: Audit - Service install (Event 7045)
+      ansible.windows.win_shell: |
+        auditpol /set /subcategory:"Security System Extension" /success:enable /failure:enable
+
+    - name: Audit - Process creation (Event 4688)
+      ansible.windows.win_shell: |
+        auditpol /set /subcategory:"Process Creation" /success:enable /failure:enable
+
+    - name: Enable command line in Event 4688
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit
+        name: ProcessCreationIncludeCmdLine_Enabled
+        data: 1
+        type: dword
+
+    - name: Enable PowerShell Script Block Logging on DC
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging
+        name: EnableScriptBlockLogging
+        data: 1
+        type: dword
+
+    - name: Verify audit policies
+      ansible.windows.win_shell: |
+        auditpol /get /category:* | findstr /i "kerberos logon service process"
+      register: audit_out
+
+    - name: Show audit result
+      ansible.builtin.debug:
+        var: audit_out.stdout_lines
+
+- name: "Lab Prep - Workstations: PowerShell logging"
+  hosts: workstations
+
+  tasks:
+
+    - name: Set PowerShell execution policy to Bypass
+      ansible.windows.win_shell: |
+        Set-ExecutionPolicy Bypass -Scope LocalMachine -Force
+      ignore_errors: yes
+    - name: Enable Script Block Logging
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging
+        name: EnableScriptBlockLogging
+        data: 1
+        type: dword
+
+    - name: Enable Module Logging
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging
+        name: EnableModuleLogging
+        data: 1
+        type: dword
+
+    - name: Create ProgramData drop folder
+      ansible.windows.win_file:
+        path: C:\ProgramData\SimDrop
+        state: directory

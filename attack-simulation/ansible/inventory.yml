@@ -1,0 +1,32 @@
+---
+# ansible/inventory.yml
+# Update ansible_host values to match your lab IP addresses.
+# Store ansible_password in Ansible Vault rather than plaintext:
+#   ansible-vault create group_vars/all/vault.yml
+#   then reference as: ansible_password: "{{ vault_winrm_password }}"
+
+all:
+  children:
+    domain_controllers:
+      hosts:
+        DC01:
+          ansible_host: 10.0.10.200       # Goku - Domain Controller
+    workstations:
+      hosts:
+        BEACHHEAD-PC:
+          ansible_host: 10.0.10.210       # Initial compromise target
+        YAMCHA-PC:
+          ansible_host: 10.0.10.211       # Lateral movement target
+
+  vars:
+    ansible_user: "CAPSULECORP\\yamcha"   # Update to your domain\user
+    ansible_password: "{{ winrm_password }}"   # Set via env: export ANSIBLE_WINRM_PASSWORD=...
+    ansible_connection: winrm
+    ansible_winrm_transport: ntlm
+    ansible_winrm_server_cert_validation: ignore
+    ansible_port: 5985
+    kali_ip: "10.0.10.60"
+    dc_ip: "10.0.10.200"
+    beachhead_ip: "10.0.10.210"
+    workstation_ip: "10.0.10.211"
+    http_port: "8080"

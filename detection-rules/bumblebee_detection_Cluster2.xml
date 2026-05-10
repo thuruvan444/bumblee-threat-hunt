@@ -1,0 +1,78 @@
+<group name="bumblebee,attack,">
+<!-- ============================================================
+     CLUSTER 2 — Credential Access
+     Rules: 100510-100529
+     ============================================================ -->
+
+<!-- ──────────────────────────────────────────────────────────
+     RULE 100510
+     TTP: Kerberoasting — Invoke-Kerberoast in script block
+     Detection level: VULNERABILITY-LEVEL
+     
+     Invariant: To Kerberoast you MUST request a TGS ticket
+     for a service account. PowerShell Kerberoasting ALWAYS
+     uses either:
+     - Invoke-Kerberoast (PowerView)
+     - KerberosRequestorSecurityToken (.NET native)
+     Both appear in Event 4104 decoded script block.
+     Event 4104 defeats ALL obfuscation — logs decoded content.
+     
+     Attacker cannot evade: must request TGS = must use one
+     of these methods = Event 4104 always logs it decoded.
+     
+     False positives: near zero. No legitimate admin script
+     uses Invoke-Kerberoast or KerberosRequestorSecurityToken.
+     ────────────────────────────────────────────────────────── -->
+<rule id="100510" level="15">
+  <if_group>windows</if_group>
+  <field name="win.system.eventID">^4104$</field>
+  <field name="win.eventdata.scriptBlockText" type="pcre2">(?i)(Invoke-Kerberoast|KerberosRequestorSecurityToken)</field>
+  <description>BUMBLEBEE: Kerberoasting detected in PowerShell script block - TGS ticket harvesting (T1558.003)</description>
+  <mitre>
+    <id>T1558.003</id>
+  </mitre>
+  <group>bumblebee_credential_access,high_severity,auto_response</group>
+</rule>
+
+<!-- ──────────────────────────────────────────────────────────
+     RULE 100512
+     TTP: LSASS Credential Dumping — comsvcs MiniDump
+     Detection level: VULNERABILITY-LEVEL
+     
+     Invariant: To dump LSASS via comsvcs.dll you MUST:
+     1. Call rundll32.exe
+     2. Target comsvcs.dll
+     3. Call the MiniDump export
+     4. Pass the LSASS PID
+     All four appear in commandLine = structural invariant.
+     
+     Attacker cannot evade: changing any of these breaks
+     the dump technique entirely.
+     
+     False positives: zero. No legitimate process calls
+     comsvcs.dll MiniDump on lsass.exe.
+     ────────────────────────────────────────────────────────── -->
+<rule id="100512" level="15">
+  <if_group>windows</if_group>
+  <field name="win.system.eventID">^4104$</field>
+  <field name="win.eventdata.scriptBlockText" type="pcre2">(?i)(comsvcs|MiniDump).*lsass</field>
+  <description>BUMBLEBEE: LSASS dump via comsvcs.dll MiniDump in script block - credential dumping (T1003.001)</description>
+  <mitre>
+    <id>T1003.001</id>
+  </mitre>
+  <group>bumblebee_credential_access,high_severity,auto_response</group>
+</rule>
+
+<!-- ──────────────────────────────────────────────────────────
+     RULE 100514
+     TTP: Kerberoast + LSASS correlation = full credential access
+     Detection level: CORRELATION
+     
+     Sequence invariant:
+     100510/511 fires (Kerberoasting confirmed on agent)
+     THEN 100512/513 fires (LSASS dump on same agent)
+     = Complete credential access phase confirmed
+     = Attacker has domain hashes + Kerberos tickets
+     = Immediate active response required
+     ────────────────────────────────────────────────────────── -->
+</group>

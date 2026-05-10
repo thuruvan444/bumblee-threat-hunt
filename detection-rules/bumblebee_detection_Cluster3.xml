@@ -1,0 +1,107 @@
+<group name="bumblebee,attack,">
+<!-- ============================================================
+     CLUSTER 3 — Lateral Movement + Persistence
+     Rules: 100520–100529
+     File: bumblebee_detection_Cluster3.xml
+     ============================================================ -->
+
+<!-- ──────────────────────────────────────────────────────────
+     RULE 100520
+     TTP: ANONYMOUS LOGON via NTLM to DC (PsExec precursor)
+     Detection level: VULNERABILITY-LEVEL
+     
+     Invariant: PsExec authenticates to SVCCTL using NTLM
+     with NULL session (ANONYMOUS LOGON) before creating
+     its service. This is structurally required by the SMB
+     named pipe negotiation. Attacker cannot skip this step
+     without breaking PsExec's service install mechanism.
+     
+     Source: BEACHHEAD → Target: Goku (DC)
+     False positives: near zero — ANONYMOUS LOGON Type 3
+     to a DC from a workstation = always suspicious.
+     ────────────────────────────────────────────────────────── -->
+<rule id="100520" level="13">
+  <if_sid>92657</if_sid>
+  <field name="win.eventdata.targetUserName" type="pcre2">(?i)ANONYMOUS</field>
+  <description>BUMBLEBEE: ANONYMOUS LOGON via NTLM to DC from internal host - PsExec lateral movement precursor (T1021.002)</description>
+  <mitre>
+    <id>T1021.002</id>
+    <id>T1550.002</id>
+  </mitre>
+  <group>bumblebee_lateral,high_severity</group>
+</rule>
+<!-- ──────────────────────────────────────────────────────────
+     RULE 100521
+     TTP: Suspicious service installed — random short name
+     Detection level: VULNERABILITY-LEVEL
+     
+     Invariant: PsExec generates a random 4-8 char service
+     name (e.g. PSEXESVC or random alphanum). Combined with
+     Event 7045, this is the structural artifact of PsExec's
+     service-based execution. Cannot be avoided — Windows
+     requires a service name to execute via SVCCTL.
+     
+     Pattern: service name <= 8 chars AND no known software
+     False positives: some legitimate short-name services
+     exist but rare on workstations.
+     ────────────────────────────────────────────────────────── -->
+<rule id="100521" level="13">
+  <if_sid>61138</if_sid>
+  <field name="win.eventdata.serviceName" type="pcre2">(?i)^[a-z0-9]{4,8}$</field>
+  <field name="win.eventdata.accountName" type="pcre2">(?i)LocalSystem</field>
+  <description>BUMBLEBEE: Short random service name installed as LocalSystem - PsExec remote execution artifact (T1021.002 + T1543.003)</description>
+  <mitre>
+    <id>T1021.002</id>
+    <id>T1543.003</id>
+  </mitre>
+  <group>bumblebee_lateral,high_severity</group>
+</rule>
+
+<!-- ──────────────────────────────────────────────────────────
+     RULE 100522
+     TTP: AnyDesk persistence service installed
+     Detection level: VULNERABILITY-LEVEL
+     
+     Invariant: AnyDesk always registers as "AnyDesk Service"
+     with --service flag. The service name and binary path
+     are fixed by the AnyDesk installer — attacker cannot
+     change them without breaking AnyDesk functionality.
+     auto start = persistence across reboots confirmed.
+     
+     False positives: zero in this lab — AnyDesk not
+     legitimately installed on any CapsuleCorp host.
+     ────────────────────────────────────────────────────────── -->
+<rule id="100522" level="14">
+  <if_sid>61138</if_sid>
+  <field name="win.eventdata.serviceName" type="pcre2">(?i)AnyDesk</field>
+  <field name="win.eventdata.startType" type="pcre2">(?i)auto start</field>
+  <description>BUMBLEBEE: AnyDesk persistence service installed with auto-start - attacker establishing persistent remote access (T1543.003 + T1219)</description>
+  <mitre>
+    <id>T1543.003</id>
+    <id>T1219</id>
+  </mitre>
+  <group>bumblebee_persistence,high_severity,auto_response</group>
+</rule>
+
+<!-- ──────────────────────────────────────────────────────────
+     RULE 100523
+     TTP: Kerberoasted service account used for DC logon
+     Detection level: VULNERABILITY-LEVEL
+     
+     Invariant: svc_backup is a service account — it should
+     NEVER interactively log into the DC from a workstation IP.
+     Source 10.0.10.60 = Kali attacker machine.
+     NTLM logon from attacker IP using cracked DA service
+     account = confirmed credential use post-Kerberoast.
+     
+     False positives: zero — svc_backup has no legitimate
+     reason to authenticate from 10.0.10.60 to the DC.
+     ────────────────────────────────────────────────────────── -->
+<rule id="100523" level="15" ignore="3600">
+  <if_sid>92652</if_sid>
+  <field name="win.eventdata.targetUserName" type="pcre2">(?i)svc_</field>
+  <field name="win.eventdata.logonProcessName" type="pcre2">(?i)NtLmSsp</field>
+  <field name="win.eventdata.lmPackageName" type="pcre2">(?i)NTLM V2</field>
+  <description>BUMBLEBEE CRITICAL: Service account using NTLM (not Kerberos) to authenticate to DC - cracked credential likely in use (T1558.003 + T1078.002)</description>
+</rule>
+</group>
